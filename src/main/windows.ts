@@ -74,6 +74,24 @@ export async function createMainWindow(): Promise<BrowserWindow> {
   return mainWindow
 }
 
+/**
+ * Programmatic navigate — used by main.ts to load a URL passed via
+ * argv on launch, or via the second-instance event when the user
+ * clicks an rweb:// link while the app is already running. Safe to
+ * call before the window is fully ready; webContentsView buffers
+ * the loadURL until the renderer is up.
+ */
+export function loadInBrowser(url: string): void {
+  if (!webContentsView) return
+  void webContentsView.webContents.loadURL(url)
+}
+
+export function focusMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
+}
+
 function setupIpcHandlers() {
   ipcMain.handle('navigate', (_event, url: string) => {
     webContentsView.webContents.loadURL(url)
