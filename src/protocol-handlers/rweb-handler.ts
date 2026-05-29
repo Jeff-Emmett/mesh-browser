@@ -10,23 +10,40 @@ export function setupRwebHandler() {
   protocol.handle('rweb', handleRequest)
 
   async function handleRequest(request: Request): Promise<Response> {
-    console.log(`Protocol handler: Fetching ${request.url}`)
+    console.log(`Protocol handler: ${request.method} ${request.url}`)
 
     try {
       const url = new URL(request.url)
-      return await fetchFromBackend(url)
+      return await fetchFromBackend(url, request)
     } catch (error) {
       return createErrorResponse(request, error as Error)
     }
   }
 
-  async function fetchFromBackend(url: URL): Promise<Response> {
+  async function fetchFromBackend(url: URL, request: Request): Promise<Response> {
+    // Forward method, headers, and (for non-GET) body to the Python
+    // backend. Static rserver content ignores all but the path; `/api/*`
+    // requests carry them through the pinned api proxy. Strip the
+    // `rweb://` scheme prefix — the backend keeps `<dest-hash>/<path>`.
+    const headers: Record<string, string> = {}
+    request.headers.forEach((value, key) => {
+      headers[key.toLowerCase()] = value
+    })
+
+    let bodyB64: string | null = null
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      const buf = await request.arrayBuffer()
+      if (buf.byteLength > 0) bodyB64 = Buffer.from(buf).toString('base64')
+    }
+
     const response = await fetch(backendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        method: 'GET',
-        url: url.href.substring(7)
+        method: request.method,
+        url: url.href.substring(7),
+        headers,
+        body_b64: bodyB64
       })
     })
 

@@ -83,17 +83,29 @@ class HTTP_API_Handler(BaseHTTPRequestHandler):
 
         method = request_data.get('method', 'GET').upper()
 
-        # For now, only support GET (until Reticulum supports other methods)
-        if method != 'GET':
-            self._send_error(501, f"Method {method} not yet supported over Reticulum")
+        # `/api/*` paths tunnel through the rspace api proxy and accept
+        # any method + headers + body. Static rserver content is GET-only
+        # (HTTP-like request/response, no body). Let the client route by
+        # path; only reject non-GET when there's no API path to carry it.
+        is_api = '/api/' in url[url.find('/'):] if '/' in url else False
+        if method != 'GET' and not is_api:
+            self._send_error(501, f"Method {method} not supported for static rweb content")
+            return
+
+        headers = request_data.get('headers') or {}
+        body_b64 = request_data.get('body_b64')
+        try:
+            body = base64.b64decode(body_b64) if body_b64 else None
+        except Exception:
+            self._send_error(400, "Invalid base64 body")
             return
 
         try:
-            # Call Reticulum client directly
-            result = self.reticulum_client.fetch_page(url)
+            # Route via the client (static vs pinned api proxy).
+            result = self.reticulum_client.fetch(url, method, headers, body)
             self._send_reticulum_response(result)
         except (RuntimeError, ValueError, ConnectionError, TimeoutError) as e:
-            self._send_error(500, str(e))
+            self._send_error(502, str(e))
         except Exception as e:
             self._send_error(500, f'Unexpected error: {str(e)}')
 
@@ -110,12 +122,20 @@ class HTTP_API_Handler(BaseHTTPRequestHandler):
 
         self.wfile.write(error_json.encode('utf-8'))
 
+    # Hop-by-hop / framing headers we re-derive ourselves rather than
+    # echo from the upstream API response.
+    _SKIP_HEADERS = {
+        'content-length', 'transfer-encoding', 'connection',
+        'keep-alive', 'upgrade',
+    }
+
     def _send_reticulum_response(self, data: Dict[str, Any]):
         """Send Reticulum content as native HTTP response"""
         # Extract response data
         content_b64 = data.get('content', '')
         content_type = data.get('content_type', 'text/html')
         status_code = data.get('status_code', 200)
+        passthrough_headers = data.get('headers')  # present for /api/* responses
 
         # Decode base64 content to raw bytes
         try:
@@ -124,9 +144,16 @@ class HTTP_API_Handler(BaseHTTPRequestHandler):
             self._send_error(500, "Invalid base64 content")
             return
 
-        # Send HTTP response with proper headers
         self.send_response(status_code)
-        self.send_header('Content-Type', content_type)
+        if passthrough_headers:
+            # API path — echo upstream headers verbatim (auth, content-type,
+            # set-cookie, …) except framing ones we recompute below.
+            for name, value in passthrough_headers.items():
+                if name.lower() not in self._SKIP_HEADERS:
+                    self.send_header(name, value)
+        else:
+            # Static path — only the guessed content type is meaningful.
+            self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(content_bytes)))
         self.end_headers()
 

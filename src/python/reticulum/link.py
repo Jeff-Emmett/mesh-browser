@@ -23,6 +23,21 @@ def establish_link(dest_hash: bytes, app: str, *aspects) -> RNS.Link:
     return _establish_connection(dest_hash, app, *aspects)
 
 
+def recall_identity(dest_hash: bytes):
+    """
+    Return the RNS.Identity that announced `dest_hash`, or None if no
+    announce has been seen and the path can't be discovered. Used for
+    the rweb api-destination same-identity pin — never raises so the
+    caller can treat "unknown" as "untrusted".
+    """
+    if not RNS.Transport.has_path(dest_hash):
+        try:
+            _request_path(dest_hash)
+        except TimeoutError:
+            return None
+    return RNS.Identity.recall(dest_hash)
+
+
 def _request_path(dest_hash: bytes) -> None:
     """Request path to destination"""
 
